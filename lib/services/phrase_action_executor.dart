@@ -14,24 +14,31 @@ import 'wishpr_location_service.dart';
 import 'wishpr_sms_service.dart';
 
 /// Runs phrase actions in order: location → SMS → call → recording.
+///
+/// Injects platform-facing services so Android-only paths (e.g. direct SMS) stay
+/// inside [WishprSmsService] without branching here.
 class PhraseActionExecutor {
   PhraseActionExecutor({
     PermissionService? permissionService,
-    WishprLocationService? locationService,
+    WishprLocationCapturing? locationService,
     ContactsRepository? contactsRepository,
-    WishprCommLauncherService? commLauncher,
-    WishprSmsService? smsService,
+    WishprCommLauncher? commLauncher,
+    WishprSmsSending? smsService,
   })  : _permissions = permissionService ?? const PermissionService(),
         _location = locationService ?? const WishprLocationService(),
         _contacts = contactsRepository ?? ContactsRepository(),
         _launcher = commLauncher ?? const WishprCommLauncherService(),
-        _sms = smsService ?? WishprSmsService();
+        _sms = smsService ??
+            WishprSmsService(
+              permissionService: permissionService ?? const PermissionService(),
+              launcher: commLauncher ?? const WishprCommLauncherService(),
+            );
 
   final PermissionService _permissions;
-  final WishprLocationService _location;
+  final WishprLocationCapturing _location;
   final ContactsRepository _contacts;
-  final WishprCommLauncherService _launcher;
-  final WishprSmsService _sms;
+  final WishprCommLauncher _launcher;
+  final WishprSmsSending _sms;
 
   Future<PhraseActionExecutionReport> execute(
     PhraseDocument phrase,

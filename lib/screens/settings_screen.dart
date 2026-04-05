@@ -3,6 +3,9 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../config/app_config.dart';
+import '../platform/wishpr_permission_support.dart';
+import '../platform/wishpr_platform.dart';
+import '../platform/wishpr_platform_user_copy.dart';
 import '../services/auth_service.dart';
 import '../services/permission_service.dart';
 import '../theme/wishpr_constants.dart';
@@ -36,7 +39,16 @@ class _SettingsScreenState extends State<SettingsScreen>
       title: 'Notifications',
       icon: Icons.notifications_active_rounded,
     ),
+    _PermissionRow(
+      kind: WishprPermission.smsSend,
+      title: 'SMS sending',
+      icon: Icons.sms_rounded,
+    ),
   ];
+
+  Iterable<_PermissionRow> get _visiblePermissionRows => _permissionRows.where(
+        (r) => WishprPermissionSupport.isManageableInSettings(r.kind),
+      );
 
   final PermissionService _permissionService = const PermissionService();
 
@@ -81,7 +93,7 @@ class _SettingsScreenState extends State<SettingsScreen>
 
   Future<void> _refreshPermissionStatuses() async {
     final next = <WishprPermission, PermissionStatus>{};
-    for (final row in _permissionRows) {
+    for (final row in _visiblePermissionRows) {
       next[row.kind] = await _permissionService.status(row.kind);
     }
     if (mounted) {
@@ -150,7 +162,8 @@ class _SettingsScreenState extends State<SettingsScreen>
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(
@@ -160,11 +173,39 @@ class _SettingsScreenState extends State<SettingsScreen>
         WishprLayout.screenPaddingV,
       ),
       children: [
-        ..._permissionRows.map((row) {
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                WishprPlatformUserCopy.settingsDeviceSectionTitle,
+                style: theme.textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w700,
+                  color: cs.onSurface.withValues(alpha: 0.9),
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                WishprPlatformUserCopy.settingsDeviceBody,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: cs.onSurface.withValues(alpha: 0.68),
+                  height: 1.45,
+                ),
+              ),
+            ],
+          ),
+        ),
+        Divider(height: 1, color: cs.outline.withValues(alpha: 0.2)),
+        ..._visiblePermissionRows.map((row) {
           final st = _statuses[row.kind];
-          final subtitle = st == null
+          final statusLine = st == null
               ? 'Checking…'
               : _permissionService.statusLabel(st);
+          final subtitleText = row.kind == WishprPermission.smsSend &&
+                  WishprPlatform.isAndroid
+              ? '$statusLine · Optional: may allow SMS without opening your SMS app first.'
+              : statusLine;
 
           return Column(
             children: [
@@ -181,9 +222,13 @@ class _SettingsScreenState extends State<SettingsScreen>
                   ),
                   child: Icon(row.icon, color: cs.primary),
                 ),
-                title: Text(row.title),
+                title: Text(
+                  WishprPlatform.isAndroid && row.kind == WishprPermission.smsSend
+                      ? '${row.title} (Android)'
+                      : row.title,
+                ),
                 subtitle: Text(
-                  subtitle,
+                  subtitleText,
                   style: TextStyle(
                     fontSize: 13,
                     color: cs.onSurface.withValues(alpha: 0.6),

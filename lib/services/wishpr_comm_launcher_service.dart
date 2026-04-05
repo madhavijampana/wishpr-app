@@ -1,5 +1,15 @@
 import 'package:url_launcher/url_launcher.dart';
 
+/// Opens SMS composer and phone dialer — same behavior on Android and iOS via URLs.
+abstract class WishprCommLauncher {
+  Future<CommLaunchOutcome> openSmsCompose({
+    required String normalizedPhone,
+    required String messageBody,
+  });
+
+  Future<CommLaunchOutcome> openTelDialer(String normalizedPhone);
+}
+
 /// Outcome of handing off to the system SMS or phone UI.
 class CommLaunchOutcome {
   const CommLaunchOutcome({required this.opened, this.errorMessage});
@@ -9,10 +19,11 @@ class CommLaunchOutcome {
 }
 
 /// Opens the platform SMS composer and phone dialer via [url_launcher].
-class WishprCommLauncherService {
+class WishprCommLauncherService implements WishprCommLauncher {
   const WishprCommLauncherService();
 
   /// Opens the default SMS app with [messageBody] prefilled.
+  @override
   Future<CommLaunchOutcome> openSmsCompose({
     required String normalizedPhone,
     required String messageBody,
@@ -56,6 +67,7 @@ class WishprCommLauncherService {
 
   /// Opens the dialer with [normalizedPhone] (use [LaunchMode.platformDefault]
   /// on some platforms so `tel:` does not require CALL_PHONE permission).
+  @override
   Future<CommLaunchOutcome> openTelDialer(String normalizedPhone) async {
     final path = normalizedPhone.trim();
     if (path.isEmpty) {

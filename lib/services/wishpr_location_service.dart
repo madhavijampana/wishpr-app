@@ -2,10 +2,18 @@ import 'package:geolocator/geolocator.dart';
 
 import 'permission_service.dart';
 
+/// One-shot location read (used after iOS/Android location permission flows).
+abstract class WishprLocationCapturing {
+  Future<LocationCaptureOutcome> captureCurrentLocation({
+    required PermissionService permissionService,
+  });
+}
+
 /// Captures a one-shot GPS fix after permissions and services are OK.
-class WishprLocationService {
+class WishprLocationService implements WishprLocationCapturing {
   const WishprLocationService();
 
+  @override
   Future<LocationCaptureOutcome> captureCurrentLocation({
     required PermissionService permissionService,
   }) async {

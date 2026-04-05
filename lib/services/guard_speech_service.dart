@@ -1,8 +1,29 @@
 import 'package:speech_to_text/speech_to_text.dart';
 
+/// Guard Mode speech: [speech_to_text] on Android and iOS (Apple speech APIs on iPhone).
+///
+/// iOS: requires `NSSpeechRecognitionUsageDescription` and `NSMicrophoneUsageDescription`
+/// in Info.plist (already in Wishpr’s template).
+abstract class WishprSpeechListening {
+  bool get isAvailable;
+  bool get userActive;
+  bool get isListeningNow;
+
+  Future<bool> initialize({
+    SpeechErrorListener? onError,
+    SpeechStatusListener? onStatus,
+  });
+
+  Future<void> startListening(SpeechResultListener onResult);
+
+  Future<void> stopListening();
+
+  Future<void> cancel();
+}
+
 /// Wraps [SpeechToText] for Guard Mode: foreground listening only, auto-resumes
 /// after each platform session until [stopListening] is called.
-class GuardSpeechService {
+class GuardSpeechService implements WishprSpeechListening {
   GuardSpeechService({SpeechToText? speech})
       : _speech = speech ?? SpeechToText();
 
@@ -11,13 +32,17 @@ class GuardSpeechService {
   bool _userActive = false;
   bool _restartScheduled = false;
 
+  @override
   bool get isAvailable => _speech.isAvailable;
 
   /// Whether the user has started Guard listening (may be between OS sessions).
+  @override
   bool get userActive => _userActive;
 
+  @override
   bool get isListeningNow => _speech.isListening;
 
+  @override
   Future<bool> initialize({
     SpeechErrorListener? onError,
     SpeechStatusListener? onStatus,
@@ -47,6 +72,7 @@ class GuardSpeechService {
 
   /// Starts continuous listening until [stopListening]. [onResult] receives
   /// partial and final updates from the platform.
+  @override
   Future<void> startListening(SpeechResultListener onResult) async {
     _resultListener = onResult;
     _userActive = true;
@@ -76,6 +102,7 @@ class GuardSpeechService {
   }
 
   /// Ends user-requested listening and stops the current session if any.
+  @override
   Future<void> stopListening() async {
     _userActive = false;
     _resultListener = null;
@@ -84,6 +111,7 @@ class GuardSpeechService {
     }
   }
 
+  @override
   Future<void> cancel() async {
     _userActive = false;
     _resultListener = null;

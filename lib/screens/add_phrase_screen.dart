@@ -6,6 +6,7 @@ import '../models/firestore/contact_document.dart';
 import '../models/firestore/phrase_document.dart';
 import '../models/phrase_matching_mode.dart';
 import '../models/voice_sample_meta.dart';
+import '../platform/wishpr_platform_user_copy.dart';
 import '../services/contacts_repository.dart';
 import '../services/current_user_id.dart';
 import '../services/firestore_error_message.dart';
@@ -406,9 +407,7 @@ class _AddPhraseScreenState extends State<AddPhraseScreen> {
                     ),
                     const SizedBox(height: 10),
                     Text(
-                      'On Android, Wishpr tries to send SMS in the background when '
-                      'permission is granted; many devices still require the composer. '
-                      'Automatic send is best-effort only.',
+                      WishprPlatformUserCopy.phraseSmsBehaviorFootnote,
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: cs.tertiary.withValues(alpha: 0.95),
                         height: 1.4,

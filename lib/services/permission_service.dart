@@ -6,13 +6,16 @@ enum WishprPermission {
   locationWhenInUse,
   notification,
 
-  /// Android runtime SMS send (optional; composer used if denied).
+  /// Android: `SEND_SMS` for background-style direct send. Not used on iOS
+  /// (SMS always goes through the system Messages composer).
   smsSend,
 }
 
 /// Centralized permission checks and requests for production use.
 ///
-/// Pair with platform manifests (Android `uses-permission`, iOS usage strings).
+/// Android: pair with `AndroidManifest.xml` `uses-permission`.
+/// iOS: pair with `Info.plist` usage strings (see `ios/Runner/IOS_PRIVACY_KEYS.txt`).
+/// Settings UI rows: [WishprPermissionSupport] in `lib/platform/`.
 class PermissionService {
   const PermissionService();
 

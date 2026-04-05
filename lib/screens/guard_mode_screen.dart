@@ -32,7 +32,7 @@ class GuardModeScreen extends StatefulWidget {
 class _GuardModeScreenState extends State<GuardModeScreen> {
   static const PermissionService _permissionService = PermissionService();
 
-  final GuardSpeechService _speech = GuardSpeechService();
+  final WishprSpeechListening _speech = GuardSpeechService();
   final PhraseTriggerCooldown _cooldown = PhraseTriggerCooldown();
 
   PhrasesRepository? _phrasesRepoCache;

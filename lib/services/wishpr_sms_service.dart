@@ -1,10 +1,8 @@
-import 'dart:io';
-
-import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../config/app_log.dart';
 import '../models/firestore/contact_document.dart';
+import '../platform/wishpr_platform.dart';
 import 'permission_service.dart';
 import 'trusted_contact_selector.dart';
 import 'wishpr_comm_launcher_service.dart';
@@ -40,11 +38,20 @@ class WishprSmsRecipientResult {
   }
 }
 
+/// Platform-agnostic SMS step: Android may use direct send + composer fallback;
+/// iOS and others use the system SMS composer only ([WishprCommLauncherService]).
+abstract class WishprSmsSending {
+  Future<List<WishprSmsRecipientResult>> sendToRecipients({
+    required List<ContactDocument> recipients,
+    required String messageBody,
+  });
+}
+
 /// Best-effort direct SMS on Android via [MethodChannel]; composer fallback per contact.
-class WishprSmsService {
+class WishprSmsService implements WishprSmsSending {
   WishprSmsService({
     PermissionService? permissionService,
-    WishprCommLauncherService? launcher,
+    WishprCommLauncher? launcher,
   })  : _permissions = permissionService ?? const PermissionService(),
         _launcher = launcher ?? const WishprCommLauncherService();
 
@@ -52,9 +59,10 @@ class WishprSmsService {
       MethodChannel('com.example.wishpr_app/sms');
 
   final PermissionService _permissions;
-  final WishprCommLauncherService _launcher;
+  final WishprCommLauncher _launcher;
 
   /// Sends [messageBody] to each [recipients] in order.
+  @override
   Future<List<WishprSmsRecipientResult>> sendToRecipients({
     required List<ContactDocument> recipients,
     required String messageBody,
@@ -65,7 +73,7 @@ class WishprSmsService {
 
     final results = <WishprSmsRecipientResult>[];
     final tryDirect =
-        !kIsWeb && Platform.isAndroid && messageBody.isNotEmpty;
+        WishprPlatform.supportsAndroidDirectSms && messageBody.isNotEmpty;
 
     var directAllowed = false;
     if (tryDirect) {
