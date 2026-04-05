@@ -5,8 +5,10 @@ import 'config/app_log.dart';
 import 'firebase_options.dart';
 import 'theme/wishpr_constants.dart';
 import 'theme/wishpr_theme.dart';
+import 'widgets/app_scaffold_messenger.dart';
 import 'widgets/auth_gate.dart';
 import 'widgets/wishpr_bootstrap_error.dart';
+import 'widgets/wishpr_safety_host.dart';
 import 'widgets/wishpr_splash_view.dart';
 
 /// Root widget: Firebase init, branded splash, then [AuthGate].
@@ -60,6 +62,10 @@ class _WishprAppState extends State<WishprApp> {
       title: WishprStrings.appName,
       debugShowCheckedModeBanner: false,
       theme: WishprTheme.dark,
+      scaffoldMessengerKey: wishprScaffoldMessengerKey,
+      builder: (context, child) {
+        return WishprSafetyHost(child: child ?? const SizedBox.shrink());
+      },
       home: _buildHome(),
     );
   }

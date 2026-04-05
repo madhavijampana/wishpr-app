@@ -28,9 +28,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
       builder: (ctx) => AlertDialog(
         title: const Text('Guard Mode'),
         content: const Text(
-          'Open the Home tab and use Start Listening when you want Wishpr to '
-          'watch for your secret phrases. When something matches, actions run and '
-          'an entry appears here. Use Test Trigger to try the flow without speaking.',
+          'Home → Guard Mode listens for phrases; Protection Center adds Timer Fail-Safe '
+          'and Quick Trigger. When any path runs your safety actions, an entry appears here. '
+          'A sample test row is under Settings → Debug.',
         ),
         actions: [
           TextButton(

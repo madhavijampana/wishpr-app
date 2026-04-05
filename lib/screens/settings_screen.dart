@@ -1,10 +1,16 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../config/app_config.dart';
 import '../services/auth_service.dart';
+import '../services/current_user_id.dart';
+import '../services/debug_mode_controller.dart';
+import '../services/firestore_error_message.dart';
 import '../services/permission_service.dart';
+import '../services/trigger_events_repository.dart';
 import '../theme/wishpr_constants.dart';
 import '../widgets/wishpr_feedback.dart';
 import 'about_wishpr_screen.dart';
@@ -49,6 +55,9 @@ class _SettingsScreenState extends State<SettingsScreen>
     WidgetsBinding.instance.addObserver(this);
     _refreshPermissionStatuses();
     _loadPackageInfo();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(DebugModeController.instance.hydrate(currentWishprUid()));
+    });
   }
 
   Future<void> _loadPackageInfo() async {
@@ -111,6 +120,26 @@ class _SettingsScreenState extends State<SettingsScreen>
 
     await _permissionService.request(kind);
     await _refreshPermissionStatuses();
+  }
+
+  Future<void> _debugSampleTrigger() async {
+    final uid = currentWishprUid();
+    if (uid == null) {
+      if (!mounted) return;
+      WishprFeedback.info(context, 'Sign in to save a sample event.');
+      return;
+    }
+    try {
+      await TriggerEventsRepository().addSampleTestTrigger(uid);
+      if (!mounted) return;
+      WishprFeedback.success(
+        context,
+        'Sample trigger saved — open History to review.',
+      );
+    } catch (e) {
+      if (!mounted) return;
+      WishprFeedback.error(context, firestoreErrorMessage(e));
+    }
   }
 
   Future<void> _confirmSignOut() async {
@@ -203,6 +232,47 @@ class _SettingsScreenState extends State<SettingsScreen>
             ],
           );
         }),
+        ValueListenableBuilder<bool>(
+          valueListenable: DebugModeController.instance,
+          builder: (context, dev, _) {
+            final uid = currentWishprUid();
+            return SwitchListTile(
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              secondary: Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: cs.primary.withValues(alpha: 0.12),
+                  borderRadius:
+                      BorderRadius.circular(WishprLayout.iconTileRadius),
+                ),
+                child: Icon(Icons.developer_mode_outlined, color: cs.primary),
+              ),
+              title: const Text('Developer mode'),
+              subtitle: Text(
+                uid == null
+                    ? 'Sign in to change this setting.'
+                    : 'Shows Guard diagnostics, live transcripts, and raw errors.',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: cs.onSurface.withValues(alpha: 0.55),
+                ),
+              ),
+              value: dev,
+              onChanged: uid == null
+                  ? null
+                  : (v) async {
+                      await DebugModeController.instance.setEnabled(uid, v);
+                    },
+            );
+          },
+        ),
+        Divider(
+          height: 1,
+          indent: 72,
+          color: cs.outline.withValues(alpha: 0.2),
+        ),
         ListTile(
           contentPadding:
               const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -317,6 +387,29 @@ class _SettingsScreenState extends State<SettingsScreen>
           },
         ),
         const SizedBox(height: 16),
+        ListTile(
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          leading: Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: cs.outline.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(WishprLayout.iconTileRadius),
+            ),
+            child: Icon(Icons.bug_report_outlined, color: cs.outline),
+          ),
+          title: const Text('Debug: sample trigger event'),
+          subtitle: Text(
+            'Writes a test-only history row (no SMS / location).',
+            style: TextStyle(
+              fontSize: 13,
+              color: cs.onSurface.withValues(alpha: 0.55),
+            ),
+          ),
+          onTap: _debugSampleTrigger,
+        ),
+        Divider(height: 1, indent: 72, color: cs.outline.withValues(alpha: 0.2)),
         ListTile(
           contentPadding:
               const EdgeInsets.symmetric(horizontal: 12, vertical: 4),

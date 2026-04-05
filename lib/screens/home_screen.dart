@@ -3,6 +3,10 @@ import 'package:flutter/material.dart';
 import '../data/sample_data.dart';
 import '../theme/wishpr_constants.dart';
 import '../widgets/activity_tile.dart';
+import '../widgets/protection_center_card.dart';
+import '../widgets/quick_trigger_feedback.dart';
+import '../widgets/triple_tap_detector.dart';
+import '../widgets/wishpr_safety_host.dart';
 import '../widgets/wishpr_wordmark.dart';
 import 'guard_mode_screen.dart';
 
@@ -30,7 +34,16 @@ class HomeScreen extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   const SizedBox(height: 8),
-                  const WishprWordmark(),
+                  TripleTapDetector(
+                    onTripleTap: () async {
+                      final scope = WishprSafetyScope.maybeOf(context);
+                      if (scope == null) return;
+                      final r = await scope.quick.fire();
+                      if (!context.mounted) return;
+                      showQuickTriggerAttemptFeedback(context, r);
+                    },
+                    child: const WishprWordmark(),
+                  ),
                   const SizedBox(height: 10),
                   Text(
                     WishprStrings.tagline,
@@ -41,7 +54,9 @@ class HomeScreen extends StatelessWidget {
                       letterSpacing: 0.2,
                     ),
                   ),
-                  const SizedBox(height: 28),
+                  const SizedBox(height: 24),
+                  const ProtectionCenterCard(),
+                  const SizedBox(height: 24),
                   const GuardModeScreen(),
                   const SizedBox(height: 28),
                   Text(
