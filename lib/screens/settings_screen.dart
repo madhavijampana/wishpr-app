@@ -1,0 +1,356 @@
+import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+import 'package:permission_handler/permission_handler.dart';
+
+import '../config/app_config.dart';
+import '../services/auth_service.dart';
+import '../services/permission_service.dart';
+import '../theme/wishpr_constants.dart';
+import '../widgets/wishpr_feedback.dart';
+import 'about_wishpr_screen.dart';
+import 'legal_disclaimer_screen.dart';
+import 'privacy_policy_screen.dart';
+
+class SettingsScreen extends StatefulWidget {
+  const SettingsScreen({super.key});
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen>
+    with WidgetsBindingObserver {
+  static const _permissionRows = <_PermissionRow>[
+    _PermissionRow(
+      kind: WishprPermission.microphone,
+      title: 'Microphone Permission',
+      icon: Icons.mic_rounded,
+    ),
+    _PermissionRow(
+      kind: WishprPermission.locationWhenInUse,
+      title: 'Location Permission',
+      icon: Icons.location_on_rounded,
+    ),
+    _PermissionRow(
+      kind: WishprPermission.notification,
+      title: 'Notifications',
+      icon: Icons.notifications_active_rounded,
+    ),
+  ];
+
+  final PermissionService _permissionService = const PermissionService();
+
+  final Map<WishprPermission, PermissionStatus> _statuses = {};
+  String _appVersion = '—';
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _refreshPermissionStatuses();
+    _loadPackageInfo();
+  }
+
+  Future<void> _loadPackageInfo() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      if (mounted) {
+        setState(() {
+          _appVersion = '${info.version} (${info.buildNumber})';
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _appVersion = AppConfig.versionLabel);
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _refreshPermissionStatuses();
+    }
+  }
+
+  Future<void> _refreshPermissionStatuses() async {
+    final next = <WishprPermission, PermissionStatus>{};
+    for (final row in _permissionRows) {
+      next[row.kind] = await _permissionService.status(row.kind);
+    }
+    if (mounted) {
+      setState(() {
+        _statuses
+          ..clear()
+          ..addAll(next);
+      });
+    }
+  }
+
+  Future<void> _onPermissionTap(WishprPermission kind) async {
+    final current = _statuses[kind] ?? await _permissionService.status(kind);
+    if (!mounted) return;
+
+    if (current == PermissionStatus.permanentlyDenied) {
+      await _permissionService.openAppSettingsPage();
+      await _refreshPermissionStatuses();
+      return;
+    }
+
+    if (_permissionService.isAllowed(current)) {
+      await _permissionService.openAppSettingsPage();
+      await _refreshPermissionStatuses();
+      return;
+    }
+
+    await _permissionService.request(kind);
+    await _refreshPermissionStatuses();
+  }
+
+  Future<void> _confirmSignOut() async {
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Sign out?'),
+        content: const Text(
+          'You’ll need to sign in again to use phrases, contacts, and Guard Mode.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Sign out'),
+          ),
+        ],
+      ),
+    );
+
+    if (go != true || !mounted) return;
+
+    try {
+      await AuthService().signOut();
+    } catch (_) {
+      if (mounted) {
+        WishprFeedback.error(
+          context,
+          'Could not sign out. Please try again.',
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(
+        WishprLayout.settingsPaddingH,
+        8,
+        WishprLayout.settingsPaddingH,
+        WishprLayout.screenPaddingV,
+      ),
+      children: [
+        ..._permissionRows.map((row) {
+          final st = _statuses[row.kind];
+          final subtitle = st == null
+              ? 'Checking…'
+              : _permissionService.statusLabel(st);
+
+          return Column(
+            children: [
+              ListTile(
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                leading: Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: cs.primary.withValues(alpha: 0.12),
+                    borderRadius:
+                        BorderRadius.circular(WishprLayout.iconTileRadius),
+                  ),
+                  child: Icon(row.icon, color: cs.primary),
+                ),
+                title: Text(row.title),
+                subtitle: Text(
+                  subtitle,
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: cs.onSurface.withValues(alpha: 0.6),
+                  ),
+                ),
+                trailing: Icon(
+                  Icons.chevron_right_rounded,
+                  color: cs.onSurface.withValues(alpha: 0.35),
+                ),
+                onTap: () => _onPermissionTap(row.kind),
+              ),
+              Divider(
+                height: 1,
+                indent: 72,
+                color: cs.outline.withValues(alpha: 0.2),
+              ),
+            ],
+          );
+        }),
+        ListTile(
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          leading: Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: cs.primary.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(WishprLayout.iconTileRadius),
+            ),
+            child: Icon(Icons.info_outline_rounded, color: cs.primary),
+          ),
+          title: const Text('App version'),
+          subtitle: Text(
+            _appVersion,
+            style: TextStyle(
+              fontSize: 13,
+              color: cs.onSurface.withValues(alpha: 0.6),
+            ),
+          ),
+        ),
+        Divider(height: 1, indent: 72, color: cs.outline.withValues(alpha: 0.2)),
+        ListTile(
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          leading: Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: cs.primary.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(WishprLayout.iconTileRadius),
+            ),
+            child: Icon(Icons.privacy_tip_rounded, color: cs.primary),
+          ),
+          title: const Text('Privacy'),
+          subtitle: Text(
+            'What we collect and how Guard Mode uses the microphone',
+            style: TextStyle(
+              fontSize: 13,
+              color: cs.onSurface.withValues(alpha: 0.55),
+            ),
+          ),
+          trailing: Icon(
+            Icons.chevron_right_rounded,
+            color: cs.onSurface.withValues(alpha: 0.35),
+          ),
+          onTap: () {
+            Navigator.of(context).push<void>(
+              MaterialPageRoute<void>(
+                builder: (_) => const PrivacyPolicyScreen(),
+              ),
+            );
+          },
+        ),
+        Divider(height: 1, indent: 72, color: cs.outline.withValues(alpha: 0.2)),
+        ListTile(
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          leading: Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: cs.primary.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(WishprLayout.iconTileRadius),
+            ),
+            child: Icon(Icons.gavel_rounded, color: cs.primary),
+          ),
+          title: const Text('Safety & legal'),
+          subtitle: Text(
+            'Assistive tool, listening limits, device differences',
+            style: TextStyle(
+              fontSize: 13,
+              color: cs.onSurface.withValues(alpha: 0.55),
+            ),
+          ),
+          trailing: Icon(
+            Icons.chevron_right_rounded,
+            color: cs.onSurface.withValues(alpha: 0.35),
+          ),
+          onTap: () {
+            Navigator.of(context).push<void>(
+              MaterialPageRoute<void>(
+                builder: (_) => const LegalDisclaimerScreen(),
+              ),
+            );
+          },
+        ),
+        Divider(height: 1, indent: 72, color: cs.outline.withValues(alpha: 0.2)),
+        ListTile(
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          leading: Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: cs.primary.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(WishprLayout.iconTileRadius),
+            ),
+            child: Icon(Icons.favorite_outline_rounded, color: cs.primary),
+          ),
+          title: const Text('About Wishpr'),
+          trailing: Icon(
+            Icons.chevron_right_rounded,
+            color: cs.onSurface.withValues(alpha: 0.35),
+          ),
+          onTap: () {
+            Navigator.of(context).push<void>(
+              MaterialPageRoute<void>(
+                builder: (_) => const AboutWishprScreen(),
+              ),
+            );
+          },
+        ),
+        const SizedBox(height: 16),
+        ListTile(
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          leading: Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: cs.error.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(WishprLayout.iconTileRadius),
+            ),
+            child: Icon(Icons.logout_rounded, color: cs.error),
+          ),
+          title: Text(
+            'Sign out',
+            style: TextStyle(
+              color: cs.error,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          onTap: _confirmSignOut,
+        ),
+      ],
+    );
+  }
+}
+
+class _PermissionRow {
+  const _PermissionRow({
+    required this.kind,
+    required this.title,
+    required this.icon,
+  });
+
+  final WishprPermission kind;
+  final String title;
+  final IconData icon;
+}

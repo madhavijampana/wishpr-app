@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Matches lib/theme/wishpr_colors.dart background (0xFF0D0614) -->
+    <color name="wishpr_splash_background">#FF0D0614</color>
+</resources>

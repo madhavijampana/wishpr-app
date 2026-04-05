@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Native splash before Flutter first frame; replace center bitmap when production icons are ready. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/wishpr_splash_background" />
+</layer-list>

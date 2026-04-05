@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/wishpr_splash_background" />
+    <!-- Center bitmap: add @mipmap/ic_launcher_foreground or custom asset when icons are final. -->
+</layer-list>

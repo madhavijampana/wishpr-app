@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "287256212010",
+    "project_id": "wishpr-1857a",
+    "storage_bucket": "wishpr-1857a.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:287256212010:android:97cdabf70012d77aed4953",
+        "android_client_info": {
+          "package_name": "com.example.wishpr_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAKz4DSXz-oenC_Y3aBa2VQSpIPnlEYqIA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

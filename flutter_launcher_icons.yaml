@@ -1,0 +1,12 @@
+# Generate store icons after you add a final 1024×1024 master asset:
+#   dart run flutter_launcher_icons
+#
+# For production: set image_path to assets/branding/app_icon_1024.png (see assets/branding/README.md).
+flutter_launcher_icons:
+  android: true
+  ios: true
+  web:
+    generate: true
+  image_path: web/icons/Icon-512.png
+  adaptive_icon_background: "#0D0614"
+  adaptive_icon_foreground: web/icons/Icon-512.png
