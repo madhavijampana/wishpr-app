@@ -1,0 +1,14 @@
+Wishpr iOS privacy keys (Info.plist)
+=====================================
+
+Already present in Info.plist for current features:
+- NSMicrophoneUsageDescription — Guard Mode / speech
+- NSSpeechRecognitionUsageDescription — speech-to-text phrase matching
+- NSLocationWhenInUseUsageDescription — share location on trigger
+- LSApplicationQueriesSchemes — sms, smsto, tel (composer / dialer)
+
+When adding features, extend Info.plist as required by plugins, for example:
+- Local/push notifications: follow permission_handler / flutter_local_notifications iOS setup.
+- Background modes: only if you add background audio/location; requires App Store justification.
+
+Build and signing still require macOS with Xcode for device testing and App Store submission.
