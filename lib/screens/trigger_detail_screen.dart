@@ -6,6 +6,19 @@ import '../models/actions/phrase_guard_action.dart';
 import '../models/firestore/trigger_event_document.dart';
 import '../theme/wishpr_constants.dart';
 
+String _sourceDetail(TriggerEventSource s) {
+  switch (s) {
+    case TriggerEventSource.test:
+      return 'Test — sample row from Settings → Debug (no live actions).';
+    case TriggerEventSource.speech:
+      return 'Speech — secret phrase matched while Guard Mode was listening.';
+    case TriggerEventSource.timer:
+      return 'Timer Fail-Safe — countdown ended without I’m Safe, or a cancellation was logged.';
+    case TriggerEventSource.quickTrigger:
+      return 'Quick Trigger — discreet in-app emergency path (triple-tap title or long-press bolt).';
+  }
+}
+
 /// Full breakdown of one history item: phrase, speech, location, per-action results.
 class TriggerDetailScreen extends StatelessWidget {
   const TriggerDetailScreen({super.key, required this.trigger});
@@ -70,9 +83,7 @@ class TriggerDetailScreen extends StatelessWidget {
             _sectionTitle(theme, 'Source'),
             const SizedBox(height: 6),
             Text(
-              trigger.source == TriggerEventSource.test
-                  ? 'Test — Guard Mode “Test Trigger” (sample data, no live speech).'
-                  : 'Speech — phrase matched from Guard Mode listening.',
+              _sourceDetail(trigger.source!),
               style: theme.textTheme.bodyMedium?.copyWith(
                 color: cs.onSurface.withValues(alpha: 0.78),
                 height: 1.4,

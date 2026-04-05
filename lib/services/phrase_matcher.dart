@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:diacritic/diacritic.dart';
 import 'package:flutter/foundation.dart';
 
 import '../config/app_log.dart';
@@ -61,9 +62,9 @@ abstract final class PhraseMatcher {
 
   static const int minPhraseLengthForContains = 3;
 
-  /// Lowercase, trim, collapse whitespace, strip punctuation (exact / high security).
+  /// Lowercase, trim, diacritic fold, collapse whitespace, strip punctuation.
   static String normalize(String input) {
-    final lower = input.toLowerCase().trim();
+    final lower = removeDiacritics(input.toLowerCase().trim());
     final collapsed = lower.replaceAll(RegExp(r'\s+'), ' ');
     return collapsed.replaceAll(RegExp(r'[^\w\s]'), '').trim();
   }

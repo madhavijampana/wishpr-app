@@ -100,10 +100,13 @@ class TriggerCard extends StatelessWidget {
                 Padding(
                   padding: const EdgeInsets.only(left: 6),
                   child: Chip(
+                    avatar: Icon(
+                      _sourceIcon(trigger.source!),
+                      size: 16,
+                      color: _sourceColor(cs, trigger.source!),
+                    ),
                     label: Text(
-                      trigger.source == TriggerEventSource.test
-                          ? 'Test'
-                          : 'Speech',
+                      _sourceLabel(trigger.source!),
                       style: const TextStyle(
                         fontSize: 11,
                         fontWeight: FontWeight.w700,
@@ -111,14 +114,11 @@ class TriggerCard extends StatelessWidget {
                     ),
                     padding: EdgeInsets.zero,
                     visualDensity: VisualDensity.compact,
-                    backgroundColor: trigger.source == TriggerEventSource.test
-                        ? cs.tertiary.withValues(alpha: 0.22)
-                        : cs.primary.withValues(alpha: 0.18),
+                    backgroundColor:
+                        _sourceColor(cs, trigger.source!).withValues(alpha: 0.18),
                     side: BorderSide.none,
                     labelStyle: TextStyle(
-                      color: trigger.source == TriggerEventSource.test
-                          ? cs.tertiary
-                          : cs.primary,
+                      color: _sourceColor(cs, trigger.source!),
                     ),
                   ),
                 ),
@@ -190,5 +190,44 @@ class TriggerCard extends StatelessWidget {
         child: content,
       ),
     );
+  }
+}
+
+String _sourceLabel(TriggerEventSource s) {
+  switch (s) {
+    case TriggerEventSource.test:
+      return 'Test';
+    case TriggerEventSource.speech:
+      return 'Speech';
+    case TriggerEventSource.timer:
+      return 'Timer';
+    case TriggerEventSource.quickTrigger:
+      return 'Quick';
+  }
+}
+
+Color _sourceColor(ColorScheme cs, TriggerEventSource s) {
+  switch (s) {
+    case TriggerEventSource.test:
+      return cs.tertiary;
+    case TriggerEventSource.speech:
+      return cs.primary;
+    case TriggerEventSource.timer:
+      return cs.secondary;
+    case TriggerEventSource.quickTrigger:
+      return cs.error;
+  }
+}
+
+IconData _sourceIcon(TriggerEventSource s) {
+  switch (s) {
+    case TriggerEventSource.test:
+      return Icons.science_outlined;
+    case TriggerEventSource.speech:
+      return Icons.mic_rounded;
+    case TriggerEventSource.timer:
+      return Icons.timer_rounded;
+    case TriggerEventSource.quickTrigger:
+      return Icons.bolt_rounded;
   }
 }

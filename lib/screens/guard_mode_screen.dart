@@ -9,17 +9,33 @@ import '../models/actions/phrase_action_execution_report.dart';
 import '../models/actions/phrase_guard_action.dart';
 import '../models/firestore/phrase_document.dart';
 import '../models/phrase_matching_mode.dart';
+import '../services/contacts_repository.dart';
 import '../services/current_user_id.dart';
+import '../services/debug_mode_controller.dart';
 import '../services/firestore_error_message.dart';
+import '../services/guard_user_messages.dart';
 import '../services/guard_speech_service.dart';
 import '../services/permission_service.dart';
 import '../services/phrase_action_executor.dart';
 import '../services/phrase_matcher.dart';
 import '../services/phrases_repository.dart';
 import '../services/trigger_events_repository.dart';
+import 'timer_failsafe_screen.dart';
 import '../theme/wishpr_constants.dart';
+import '../widgets/guard/guard_alert_card.dart';
+import '../widgets/guard/guard_diagnostics_panel.dart';
+import '../widgets/guard/guard_main_control.dart';
+import '../widgets/guard/guard_match_success_card.dart';
+import '../widgets/guard/guard_quick_actions.dart';
+import '../widgets/guard/guard_recording_notice.dart';
+import '../widgets/guard/guard_setup_summary_card.dart';
+import '../widgets/guard/guard_status_badge.dart';
+import '../widgets/guard/guard_status_card.dart';
+import '../widgets/guard/guard_top_state.dart';
+import '../widgets/quick_trigger_feedback.dart';
 import '../widgets/microphone_permission_dialog.dart';
 import '../widgets/wishpr_feedback.dart';
+import '../widgets/wishpr_safety_host.dart';
 
 /// Guard Mode card: live speech recognition vs Firestore phrases (foreground only).
 class GuardModeScreen extends StatefulWidget {
@@ -37,6 +53,7 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
 
   PhrasesRepository? _phrasesRepoCache;
   TriggerEventsRepository? _triggerRepoCache;
+  ContactsRepository? _contactsRepoCache;
 
   PhrasesRepository get _phrasesRepo =>
       _phrasesRepoCache ??= PhrasesRepository();
@@ -44,7 +61,9 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
   TriggerEventsRepository get _triggerRepo =>
       _triggerRepoCache ??= TriggerEventsRepository();
 
-  bool _testBusy = false;
+  ContactsRepository get _contactsRepo =>
+      _contactsRepoCache ??= ContactsRepository();
+
   bool _startBusy = false;
   bool _stopBusy = false;
   bool _listening = false;
@@ -62,8 +81,21 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
   static const Duration _partialEvalDebounce = Duration(milliseconds: 450);
   static const Duration _silenceNoTranscriptTimeout = Duration(seconds: 5);
 
-  /// Shown under live transcription when the silence timer fires (cleared on speech / stop).
+  /// Silence / no-transcript hint (friendly copy; also gates user-facing status).
   String _silenceUserHint = '';
+
+  /// User-facing flags (never shown in developer diagnostics text fields).
+  bool _friendlyNoMatch = false;
+  bool _friendlyCooldown = false;
+
+  int _contactsCount = 0;
+  bool _testBusy = false;
+
+  /// Friendly persistent warning below status (no raw errors in normal mode).
+  String? _ambientWarning;
+
+  /// Matched phrase had [PhraseDocument.startRecording]; show notice while banner visible.
+  bool _lastMatchHadRecordingIntent = false;
 
   /// Step-by-step trace for the **real** speech → match → persist path.
   String _stMicGranted = '—';
@@ -102,6 +134,178 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
     setState(() {
       _micDebugLine = _permissionService.statusLabel(st);
     });
+  }
+
+  Future<void> _reloadContacts() async {
+    final uid = currentWishprUid();
+    if (uid == null) {
+      if (mounted) setState(() => _contactsCount = 0);
+      return;
+    }
+    try {
+      final list = await _contactsRepo.fetchContactsOnceNewestFirst(uid);
+      if (!mounted) return;
+      setState(() => _contactsCount = list.length);
+    } catch (_) {
+      if (mounted) setState(() => _contactsCount = 0);
+    }
+  }
+
+  String _aggregateEnabledActionsSummary() {
+    final active = _phrases.where(
+      (p) => p.active && p.secretPhrase.trim().isNotEmpty,
+    );
+    var sms = false;
+    var loc = false;
+    var call = false;
+    var rec = false;
+    for (final p in active) {
+      if (p.sendSms) sms = true;
+      if (p.shareLocation) loc = true;
+      if (p.callContact) call = true;
+      if (p.startRecording) rec = true;
+    }
+    final parts = <String>[];
+    if (sms) parts.add('SMS');
+    if (loc) parts.add('Location');
+    if (call) parts.add('Call');
+    if (rec) parts.add('Record');
+    if (parts.isEmpty) return 'None enabled';
+    return parts.join(' · ');
+  }
+
+  GuardTopState _computeTopBadgeState() {
+    if (_matchBanner != null) return GuardTopState.triggered;
+    if (_friendlyCooldown) return GuardTopState.cooldown;
+    if (!_listening) return GuardTopState.inactive;
+    if (_speech.isListeningNow) return GuardTopState.listening;
+    return GuardTopState.armed;
+  }
+
+  ({String title, String body}) _statusTitleBody(bool developerMode) {
+    if (developerMode) {
+      return (
+        title: 'Developer mode',
+        body:
+            'Open Developer Diagnostics below for transcripts, scores, thresholds, and engine data.',
+      );
+    }
+    if (_startBusy) {
+      return (title: 'Starting Guard Mode', body: GuardUserMessages.starting);
+    }
+    if (_stopBusy) {
+      return (title: 'Stopping Guard Mode', body: GuardUserMessages.stopping);
+    }
+    if (_matchBanner != null) {
+      return (
+        title: 'Trigger matched',
+        body:
+            'Your safety plan ran. Open History anytime for a full breakdown.',
+      );
+    }
+    if (!_listening) {
+      return (
+        title: 'Wishpr is inactive',
+        body:
+            'Wishpr listens for your safety triggers while Guard Mode is active. '
+            'Use the button below when you’re ready.',
+      );
+    }
+    if (_silenceUserHint.isNotEmpty) {
+      return (
+        title: 'Could not hear clearly',
+        body: GuardUserMessages.couldNotHearClearly,
+      );
+    }
+    if (_friendlyCooldown) {
+      return (
+        title: 'Brief pause',
+        body: GuardUserMessages.cooldownBriefPause,
+      );
+    }
+    if (_friendlyNoMatch) {
+      return (
+        title: 'No match yet',
+        body: GuardUserMessages.triggerNotMatched,
+      );
+    }
+    if (_listening && !_speech.isListeningNow) {
+      return (
+        title: 'Wishpr is armed and listening',
+        body: 'Reconnecting to the microphone…',
+      );
+    }
+    if (_liveText.trim().isNotEmpty) {
+      return (
+        title: 'Wishpr is armed and listening',
+        body: 'Listening for command phrase',
+      );
+    }
+    return (
+      title: 'Wishpr is armed and listening',
+      body: 'Listening for wake phrase',
+    );
+  }
+
+  GuardDiagnosticsSnapshot _diagnosticsSnapshot() {
+    return GuardDiagnosticsSnapshot(
+      micDebugLine: _micDebugLine,
+      speechEngineLine: _speechEngineLine,
+      speechStatusLine: _speechStatusLine,
+      speechLastErrorLine: _speechLastErrorLine,
+      listening: _listening,
+      isListeningNow: _speech.isListeningNow,
+      liveText: _liveText,
+      activePhraseCount: _activePhraseCount,
+      stMicGranted: _stMicGranted,
+      stSpeechInit: _stSpeechInit,
+      stListening: _stListening,
+      stPartialTranscript: _stPartialTranscript,
+      stFinalTranscript: _stFinalTranscript,
+      stLastCallbackKind: _stLastCallbackKind,
+      stLatestRecognized: _stLatestRecognized,
+      stNormalized: _stNormalized,
+      stNormalizedFlex: _stNormalizedFlex,
+      stMatcherNormPhrase: _stMatcherNormPhrase,
+      stMatcherStringSim: _stMatcherStringSim,
+      stMatcherTokenOverlap: _stMatcherTokenOverlap,
+      stMatcherFuzzyKw: _stMatcherFuzzyKw,
+      stMatcherFinalScore: _stMatcherFinalScore,
+      stMatcherThreshold: _stMatcherThreshold,
+      stMatcherReason: _stMatcherReason,
+      stPhraseCount: _stPhraseCount,
+      stLoadedPhraseTexts: _stLoadedPhraseTexts,
+      stMatchAttempt: _stMatchAttempt,
+      stMatchedPhrase: _stMatchedPhrase,
+      stActionEngine: _stActionEngine,
+      stFirestoreWrite: _stFirestoreWrite,
+      stLastException: _stLastException,
+    );
+  }
+
+  Future<void> _onTestTrigger() async {
+    final uid = currentWishprUid();
+    if (uid == null) {
+      if (mounted) {
+        WishprFeedback.info(context, GuardUserMessages.signInToUse);
+      }
+      return;
+    }
+    setState(() => _testBusy = true);
+    try {
+      await _triggerRepo.addSampleTestTrigger(uid);
+      if (!mounted) return;
+      WishprFeedback.success(context, 'Test trigger saved. Check History.');
+    } catch (e) {
+      if (!mounted) return;
+      final dev = DebugModeController.instance.value;
+      WishprFeedback.error(
+        context,
+        dev ? firestoreErrorMessage(e) : GuardUserMessages.eventSaveFailed,
+      );
+    } finally {
+      if (mounted) setState(() => _testBusy = false);
+    }
   }
 
   int get _activePhraseCount => _phrases
@@ -154,16 +358,24 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
     _stLastException = '—';
   }
 
+  void _onDebugModeChanged() {
+    if (mounted) setState(() {});
+  }
+
   @override
   void initState() {
     super.initState();
+    DebugModeController.instance.addListener(_onDebugModeChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_refreshMicDebug());
+      unawaited(DebugModeController.instance.hydrate(currentWishprUid()));
+      unawaited(_reloadContacts());
     });
   }
 
   @override
   void dispose() {
+    DebugModeController.instance.removeListener(_onDebugModeChanged);
     _matchBannerTimer?.cancel();
     _matchDebounceTimer?.cancel();
     _matchDebounceTimer = null;
@@ -183,11 +395,13 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
     _silenceTimer = Timer(_silenceNoTranscriptTimeout, () {
       if (!mounted || !_listening) return;
       if (_liveText.trim().isNotEmpty) return;
-      const hint =
-          'No speech detected yet. Check the microphone, speak clearly, or tap Stop then Start Listening to retry.';
+      final dev = DebugModeController.instance.value;
       setState(() {
-        _silenceUserHint = hint;
-        _stMatchAttempt = hint;
+        _silenceUserHint = GuardUserMessages.couldNotHearClearly;
+        _stMatchAttempt = dev
+            ? 'SILENCE TIMEOUT: no transcript after '
+                '${_silenceNoTranscriptTimeout.inSeconds}s'
+            : GuardUserMessages.couldNotHearClearly;
       });
       AppLog.w(
         'Guard: silence timeout — no transcript',
@@ -277,10 +491,7 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
     final uid = currentWishprUid();
     if (uid == null) {
       if (!mounted) return;
-      WishprFeedback.info(
-        context,
-        'Sign in to load your phrases and use Guard Mode.',
-      );
+      WishprFeedback.info(context, GuardUserMessages.signInToUse);
       return;
     }
 
@@ -306,7 +517,14 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
         loaded = await _phrasesRepo.fetchPhrasesOnce(uid);
       } catch (e) {
         if (!mounted) return;
-        WishprFeedback.error(context, firestoreErrorMessage(e));
+        final dev = DebugModeController.instance.value;
+        setState(() {
+          if (!dev) _ambientWarning = GuardUserMessages.phrasesLoadProblem;
+        });
+        WishprFeedback.error(
+          context,
+          dev ? firestoreErrorMessage(e) : GuardUserMessages.phrasesLoadProblem,
+        );
         return;
       }
 
@@ -328,6 +546,8 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
         'count=${loaded.length}',
       );
 
+      unawaited(_reloadContacts());
+
       if (_activePhraseCount == 0) {
         WishprFeedback.info(
           context,
@@ -342,10 +562,18 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
             '${err.errorMsg} permanent=${err.permanent}',
           );
           if (!mounted) return;
-          setState(() => _speechLastErrorLine = err.errorMsg);
+          final dev = DebugModeController.instance.value;
+          setState(() {
+            _speechLastErrorLine = err.errorMsg;
+            if (!dev) {
+              _ambientWarning = GuardUserMessages.speechRecognitionProblem;
+            }
+          });
           WishprFeedback.error(
             context,
-            'Speech recognition error: ${err.errorMsg}',
+            dev
+                ? 'Speech error: ${err.errorMsg}'
+                : GuardUserMessages.speechRecognitionProblem,
           );
         },
         onStatus: (status) {
@@ -357,15 +585,19 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
 
       if (!mounted) return;
       if (!speechOk) {
+        final dev = DebugModeController.instance.value;
         setState(() {
           _speechEngineLine = 'Unavailable';
           _stSpeechInit = 'No';
           _stLastException = 'Speech engine initialize() returned false';
+          if (!dev) {
+            _ambientWarning = GuardUserMessages.speechEngineUnavailable;
+          }
         });
         AppLog.w('Guard: speech engine not available');
         WishprFeedback.error(
           context,
-          'Speech recognition isn’t available. Check the microphone permission and try again.',
+          GuardUserMessages.speechEngineUnavailable,
         );
         return;
       }
@@ -373,6 +605,7 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
       setState(() {
         _speechEngineLine = 'Initialized';
         _speechLastErrorLine = '—';
+        _ambientWarning = null;
         _listening = true;
         _liveText = '';
         _silenceUserHint = '';
@@ -424,9 +657,12 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
 
     final uid = currentWishprUid();
 
-    setState(() {
-      _liveText = words;
-      _stLastCallbackKind = isFinal ? 'final' : 'partial';
+      setState(() {
+        _liveText = words;
+        _friendlyNoMatch = false;
+        _friendlyCooldown = false;
+        if (_ambientWarning != null) _ambientWarning = null;
+        _stLastCallbackKind = isFinal ? 'final' : 'partial';
       if (!isFinal) {
         _stPartialTranscript =
             words.isEmpty ? '(empty partial)' : words;
@@ -593,6 +829,7 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
       if (!_partialMatchStrongEnough(eval, candidate)) {
         setState(() {
           _applyEvalToMatcherTrace(eval);
+          _friendlyNoMatch = false;
           _stMatchAttempt =
               'Partial: no strong match yet — ${eval.reason} '
               '(need phrase substring, high score, or exact for strict mode).';
@@ -610,6 +847,8 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
       _stMatchAttempt = candidate != null
           ? 'Match OK (${isFinal ? "final" : "partial"}) — ${eval.reason}'
           : 'No match — ${eval.reason}';
+      _friendlyNoMatch = candidate == null && trimmed.isNotEmpty;
+      if (candidate != null) _friendlyCooldown = false;
     });
     AppLog.d('Guard: match decision', '${eval.reason} final=$isFinal');
 
@@ -626,6 +865,8 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
     if (!_cooldown.canTrigger(matched.id)) {
       if (!mounted) return;
       setState(() {
+        _friendlyCooldown = true;
+        _friendlyNoMatch = false;
         _stMatchAttempt =
             'Cooldown — matched "${matched.label}" but duplicate trigger suppressed.';
       });
@@ -634,6 +875,12 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
     }
 
     _cooldown.recordTrigger(matched.id);
+    if (mounted) {
+      setState(() {
+        _friendlyNoMatch = false;
+        _friendlyCooldown = false;
+      });
+    }
     await _persistTrigger(uid, matched, trimmed);
   }
 
@@ -663,10 +910,15 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
     } catch (e, st) {
       AppLog.e('Guard: action engine execution threw', e, st);
       if (mounted) {
+        final dev = DebugModeController.instance.value;
         setState(() {
           _stActionEngine =
               'Failed — exception during PhraseActionExecutor.execute';
           _stLastException = e.toString();
+          if (!dev) {
+            _ambientWarning =
+                'Wishpr couldn’t finish every safety step. Check History for details.';
+          }
         });
       }
       report = PhraseActionExecutionReport(
@@ -703,12 +955,16 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
     } catch (e, st) {
       AppLog.e('Guard: Firestore trigger_event write failed', e, st);
       if (mounted) {
+        final dev = DebugModeController.instance.value;
         setState(() {
-          _stFirestoreWrite =
-              'Failed — ${firestoreErrorMessage(e)}';
+          _stFirestoreWrite = 'Failed — ${firestoreErrorMessage(e)}';
           _stLastException = e.toString();
+          if (!dev) _ambientWarning = GuardUserMessages.eventSaveFailed;
         });
-        WishprFeedback.error(context, firestoreErrorMessage(e));
+        WishprFeedback.error(
+          context,
+          dev ? firestoreErrorMessage(e) : GuardUserMessages.eventSaveFailed,
+        );
       }
       return;
     }
@@ -716,12 +972,15 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
     if (!mounted) return;
     setState(() {
       _stFirestoreWrite = 'Success';
+      _friendlyNoMatch = false;
+      _friendlyCooldown = false;
     });
     WishprFeedback.success(
       context,
       'Safety event saved. View details in History.',
     );
     setState(() {
+      _lastMatchHadRecordingIntent = phrase.startRecording;
       _matchBanner = 'Phrase matched: ${phrase.label}';
       _matchExecutionSummary = report.executionSummary;
       _matchFinalStatus = report.status;
@@ -733,6 +992,7 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
           _matchBanner = null;
           _matchExecutionSummary = null;
           _matchFinalStatus = null;
+          _lastMatchHadRecordingIntent = false;
         });
       }
     });
@@ -750,6 +1010,9 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
           _listening = false;
           _liveText = '';
           _silenceUserHint = '';
+          _friendlyNoMatch = false;
+          _friendlyCooldown = false;
+          _ambientWarning = null;
           _clearSpeechTrace();
           _stListening = 'No';
         });
@@ -759,565 +1022,181 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
     }
   }
 
-  Future<void> _onTestTrigger() async {
-    final uid = currentWishprUid();
-    if (uid == null) {
-      if (!mounted) return;
-      WishprFeedback.info(context, 'Sign in to record a test trigger.');
-      return;
-    }
-
-    setState(() => _testBusy = true);
-    try {
-      await _triggerRepo.addSampleTestTrigger(uid);
-      if (!mounted) return;
-      WishprFeedback.success(
-        context,
-        'Test trigger saved — open History to review it.',
-      );
-    } catch (e) {
-      if (!mounted) return;
-      WishprFeedback.error(context, firestoreErrorMessage(e));
-    } finally {
-      if (mounted) setState(() => _testBusy = false);
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
+    final developerMode = DebugModeController.instance.value;
+    final safety = WishprSafetyScope.maybeOf(context);
+    final status = _statusTitleBody(developerMode);
+    final signedIn = currentWishprUid() != null;
 
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(WishprLayout.guardCardRadius),
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [
-            cs.primaryContainer,
-            cs.secondaryContainer.withValues(alpha: 0.55),
-          ],
-        ),
-        border: Border.all(
-          color: cs.primary.withValues(alpha: 0.35),
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: cs.primary.withValues(alpha: 0.12),
-            blurRadius: 24,
-            offset: const Offset(0, 12),
-          ),
-        ],
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(22),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(
-                  Icons.shield_moon_rounded,
-                  color: cs.primary,
-                  size: 28,
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    'Guard Mode',
-                    style: theme.textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w700,
-                      color: cs.onPrimaryContainer,
-                    ),
-                  ),
-                ),
+    return ListenableBuilder(
+      listenable: Listenable.merge([
+        DebugModeController.instance,
+        if (safety != null) safety.timer,
+      ]),
+      builder: (context, _) {
+        final timerRunning = safety?.timer.isRunning ?? false;
+        final badge = _computeTopBadgeState();
+        return DecoratedBox(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(WishprLayout.guardCardRadius),
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                cs.primaryContainer,
+                cs.secondaryContainer.withValues(alpha: 0.55),
               ],
             ),
-            const SizedBox(height: 10),
-            Text(
-              'Listen for your secret phrases and run your safety playbook automatically.',
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: cs.onPrimaryContainer.withValues(alpha: 0.85),
-                height: 1.45,
-              ),
+            border: Border.all(
+              color: cs.primary.withValues(alpha: 0.35),
             ),
-            const SizedBox(height: 12),
-            Theme(
-              data: theme.copyWith(dividerColor: Colors.transparent),
-              child: ExpansionTile(
-                tilePadding: EdgeInsets.zero,
-                title: Text(
-                  'Diagnostics',
-                  style: theme.textTheme.labelLarge?.copyWith(
-                    color: cs.onPrimaryContainer,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                childrenPadding: const EdgeInsets.only(bottom: 8),
+            boxShadow: [
+              BoxShadow(
+                color: cs.primary.withValues(alpha: 0.12),
+                blurRadius: 24,
+                offset: const Offset(0, 12),
+              ),
+            ],
+          ),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(22, 22, 22, 28),
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  _DebugLine(
-                    label: 'Microphone permission',
-                    value: _micDebugLine,
-                    theme: theme,
-                    cs: cs,
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(
+                        Icons.shield_moon_rounded,
+                        color: cs.primary,
+                        size: 30,
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Guard Mode',
+                              style: theme.textTheme.titleLarge?.copyWith(
+                                fontWeight: FontWeight.w800,
+                                color: cs.onPrimaryContainer,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              'Wishpr listens for your safety triggers while '
+                              'Guard Mode is active.',
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                color: cs.onPrimaryContainer
+                                    .withValues(alpha: 0.82),
+                                height: 1.45,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      GuardStatusBadge(state: badge, colorScheme: cs),
+                    ],
                   ),
-                  const SizedBox(height: 8),
-                  _DebugLine(
-                    label: 'Speech engine',
-                    value: _speechEngineLine,
-                    theme: theme,
-                    cs: cs,
-                  ),
-                  const SizedBox(height: 8),
-                  _DebugLine(
-                    label: 'Speech status',
-                    value: _speechStatusLine,
-                    theme: theme,
-                    cs: cs,
-                  ),
-                  const SizedBox(height: 8),
-                  _DebugLine(
-                    label: 'Listening (session)',
-                    value: _listening
-                        ? (_speech.isListeningNow ? 'Active' : 'Between sessions')
-                        : 'Off',
-                    theme: theme,
-                    cs: cs,
-                  ),
-                  const SizedBox(height: 8),
-                  _DebugLine(
-                    label: 'Last speech error',
-                    value: _speechLastErrorLine,
-                    theme: theme,
-                    cs: cs,
-                  ),
-                  const SizedBox(height: 8),
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: TextButton.icon(
-                      onPressed: _refreshMicDebug,
-                      icon: const Icon(Icons.refresh_rounded, size: 18),
-                      label: const Text('Refresh mic status'),
-                      style: TextButton.styleFrom(
-                        foregroundColor: cs.onPrimaryContainer,
-                        visualDensity: VisualDensity.compact,
+                  const SizedBox(height: 32),
+                  Center(
+                    child: Semantics(
+                      button: true,
+                      label: _listening
+                          ? 'Stop Guard Mode'
+                          : 'Start Guard Mode',
+                      child: GuardMainControl(
+                        isListening: _listening,
+                        busy: _listening ? _stopBusy : _startBusy,
+                        onPressed: _listening
+                            ? _onStopListening
+                            : _onStartListening,
+                        colorScheme: cs,
                       ),
                     ),
                   ),
+                  const SizedBox(height: 28),
+                  GuardStatusCard(
+                    title: status.title,
+                    body: status.body,
+                    colorScheme: cs,
+                  ),
+                  if (_ambientWarning != null &&
+                      _ambientWarning!.isNotEmpty) ...[
+                    const SizedBox(height: 14),
+                    GuardAlertCard(
+                      message: _ambientWarning!,
+                      colorScheme: cs,
+                    ),
+                  ],
+                  if (_matchBanner != null) ...[
+                    const SizedBox(height: 16),
+                    GuardMatchSuccessCard(
+                      developerMode: developerMode,
+                      bannerLine: _matchBanner!,
+                      executionSummary: _matchExecutionSummary,
+                      finalStatus: _matchFinalStatus,
+                      colorScheme: cs,
+                    ),
+                  ],
+                  if (_lastMatchHadRecordingIntent &&
+                      _matchBanner != null &&
+                      !developerMode) ...[
+                    const SizedBox(height: 12),
+                    GuardRecordingNotice(colorScheme: cs),
+                  ],
+                  const SizedBox(height: 22),
+                  GuardSetupSummaryCard(
+                    activePhrases: _activePhraseCount,
+                    trustedContacts: _contactsCount,
+                    actionsSummary: _aggregateEnabledActionsSummary(),
+                    timerFailsafeActive: timerRunning,
+                    colorScheme: cs,
+                  ),
+                  const SizedBox(height: 22),
+                  GuardQuickActions(
+                    colorScheme: cs,
+                    testBusy: _testBusy,
+                    signInRequired: !signedIn,
+                    onTestTrigger: _onTestTrigger,
+                    onTimerFailsafe: signedIn
+                        ? () {
+                            Navigator.of(context).push(
+                              MaterialPageRoute<void>(
+                                builder: (_) => const TimerFailsafeScreen(),
+                              ),
+                            );
+                          }
+                        : null,
+                    onQuickTrigger: signedIn && safety != null
+                        ? () async {
+                            final r = await safety.quick.fire();
+                            if (!context.mounted) return;
+                            showQuickTriggerAttemptFeedback(context, r);
+                          }
+                        : null,
+                  ),
+                  if (developerMode) ...[
+                    const SizedBox(height: 20),
+                    GuardDiagnosticsPanel(
+                      theme: theme,
+                      colorScheme: cs,
+                      data: _diagnosticsSnapshot(),
+                      onRefreshMic: _refreshMicDebug,
+                    ),
+                  ],
                 ],
               ),
             ),
-            if (_listening) ...[
-              const SizedBox(height: 16),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: cs.surface.withValues(alpha: 0.35),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: cs.primary.withValues(alpha: 0.25),
-                  ),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Icon(
-                          Icons.graphic_eq_rounded,
-                          size: 18,
-                          color: cs.primary,
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          'Live transcription',
-                          style: theme.textTheme.labelLarge?.copyWith(
-                            color: cs.onPrimaryContainer,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      _liveText.isEmpty ? 'Listening… speak your phrase.' : _liveText,
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        color: cs.onPrimaryContainer.withValues(alpha: 0.92),
-                        height: 1.4,
-                      ),
-                    ),
-                    if (_silenceUserHint.isNotEmpty) ...[
-                      const SizedBox(height: 10),
-                      Text(
-                        _silenceUserHint,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: cs.onPrimaryContainer.withValues(alpha: 0.78),
-                          height: 1.45,
-                        ),
-                      ),
-                    ],
-                    const SizedBox(height: 6),
-                    Text(
-                      '$_activePhraseCount active ${_activePhraseCount == 1 ? 'phrase' : 'phrases'} loaded',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: cs.onPrimaryContainer.withValues(alpha: 0.65),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      'Real speech trigger trace',
-                      style: theme.textTheme.labelLarge?.copyWith(
-                        color: cs.onPrimaryContainer,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Step-by-step state for Test Trigger is unchanged; this path is speech only.',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: cs.onPrimaryContainer.withValues(alpha: 0.65),
-                        height: 1.35,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    _DebugLine(
-                      label: '1. Microphone permission granted',
-                      value: _stMicGranted,
-                      theme: theme,
-                      cs: cs,
-                    ),
-                    const SizedBox(height: 8),
-                    _DebugLine(
-                      label: '2. Speech engine initialized',
-                      value: _stSpeechInit,
-                      theme: theme,
-                      cs: cs,
-                    ),
-                    const SizedBox(height: 8),
-                    _DebugLine(
-                      label: '3. Listening active',
-                      value: _stListening,
-                      theme: theme,
-                      cs: cs,
-                    ),
-                    const SizedBox(height: 8),
-                    _DebugLine(
-                      label: '4. Partial transcript (latest partial callback)',
-                      value: _stPartialTranscript,
-                      theme: theme,
-                      cs: cs,
-                    ),
-                    const SizedBox(height: 8),
-                    _DebugLine(
-                      label: '5. Final transcript (latest final callback)',
-                      value: _stFinalTranscript,
-                      theme: theme,
-                      cs: cs,
-                    ),
-                    const SizedBox(height: 8),
-                    _DebugLine(
-                      label: '6. Last engine callback',
-                      value: _stLastCallbackKind,
-                      theme: theme,
-                      cs: cs,
-                    ),
-                    const SizedBox(height: 8),
-                    _DebugLine(
-                      label: '7. Latest recognized text (current utterance)',
-                      value: _stLatestRecognized,
-                      theme: theme,
-                      cs: cs,
-                    ),
-                    const SizedBox(height: 8),
-                    _DebugLine(
-                      label: '8. Normalized recognized (basic)',
-                      value: _stNormalized,
-                      theme: theme,
-                      cs: cs,
-                    ),
-                    const SizedBox(height: 8),
-                    _DebugLine(
-                      label:
-                          '9. Normalized recognized (flexible: collapse repeats)',
-                      value: _stNormalizedFlex,
-                      theme: theme,
-                      cs: cs,
-                    ),
-                    const SizedBox(height: 8),
-                    _DebugLine(
-                      label:
-                          '10. Matcher: normalized saved phrase (flex, best)',
-                      value: _stMatcherNormPhrase,
-                      theme: theme,
-                      cs: cs,
-                    ),
-                    const SizedBox(height: 8),
-                    _DebugLine(
-                      label: '11. Matcher: string similarity score',
-                      value: _stMatcherStringSim,
-                      theme: theme,
-                      cs: cs,
-                    ),
-                    const SizedBox(height: 8),
-                    _DebugLine(
-                      label: '12. Matcher: token overlap score',
-                      value: _stMatcherTokenOverlap,
-                      theme: theme,
-                      cs: cs,
-                    ),
-                    const SizedBox(height: 8),
-                    _DebugLine(
-                      label: '13. Matcher: fuzzy keyword score',
-                      value: _stMatcherFuzzyKw,
-                      theme: theme,
-                      cs: cs,
-                    ),
-                    const SizedBox(height: 8),
-                    _DebugLine(
-                      label: '14. Matcher: final chosen score',
-                      value: _stMatcherFinalScore,
-                      theme: theme,
-                      cs: cs,
-                    ),
-                    const SizedBox(height: 8),
-                    _DebugLine(
-                      label: '15. Matcher: threshold used',
-                      value: _stMatcherThreshold,
-                      theme: theme,
-                      cs: cs,
-                    ),
-                    const SizedBox(height: 8),
-                    _DebugLine(
-                      label: '16. Matcher: reason (match / no match)',
-                      value: _stMatcherReason,
-                      theme: theme,
-                      cs: cs,
-                    ),
-                    const SizedBox(height: 8),
-                    _DebugLine(
-                      label: '17. Phrases loaded from Firestore (count)',
-                      value: _stPhraseCount,
-                      theme: theme,
-                      cs: cs,
-                    ),
-                    const SizedBox(height: 8),
-                    _DebugLine(
-                      label: '18. Loaded phrase texts',
-                      value: _stLoadedPhraseTexts,
-                      theme: theme,
-                      cs: cs,
-                    ),
-                    const SizedBox(height: 8),
-                    _DebugLine(
-                      label: '19. Phrase match attempt result',
-                      value: _stMatchAttempt,
-                      theme: theme,
-                      cs: cs,
-                    ),
-                    const SizedBox(height: 8),
-                    _DebugLine(
-                      label: '20. Matched phrase id · label',
-                      value: _stMatchedPhrase,
-                      theme: theme,
-                      cs: cs,
-                    ),
-                    const SizedBox(height: 8),
-                    _DebugLine(
-                      label: '21. Action engine execution',
-                      value: _stActionEngine,
-                      theme: theme,
-                      cs: cs,
-                    ),
-                    const SizedBox(height: 8),
-                    _DebugLine(
-                      label: '22. Firestore trigger_event write',
-                      value: _stFirestoreWrite,
-                      theme: theme,
-                      cs: cs,
-                    ),
-                    const SizedBox(height: 8),
-                    _DebugLine(
-                      label: '23. Last exception message',
-                      value: _stLastException,
-                      theme: theme,
-                      cs: cs,
-                    ),
-                  ],
-                ),
-              ),
-            ],
-            if (_matchBanner != null) ...[
-              const SizedBox(height: 12),
-              Material(
-                color: cs.primary.withValues(alpha: 0.22),
-                borderRadius: BorderRadius.circular(12),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Icon(
-                            Icons.verified_rounded,
-                            color: cs.primary,
-                            size: 22,
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Text(
-                              _matchBanner!,
-                              style: theme.textTheme.bodyMedium?.copyWith(
-                                color: cs.onPrimaryContainer,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                          if (_matchFinalStatus != null &&
-                              _matchFinalStatus!.isNotEmpty)
-                            Chip(
-                              label: Text(
-                                _matchFinalStatus!,
-                                style: const TextStyle(
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                              visualDensity: VisualDensity.compact,
-                              padding: EdgeInsets.zero,
-                              backgroundColor:
-                                  cs.surface.withValues(alpha: 0.35),
-                              side: BorderSide.none,
-                              labelStyle: TextStyle(color: cs.primary),
-                            ),
-                        ],
-                      ),
-                      if (_matchExecutionSummary != null &&
-                          _matchExecutionSummary!.isNotEmpty) ...[
-                        const SizedBox(height: 10),
-                        Text(
-                          'Actions run',
-                          style: theme.textTheme.labelLarge?.copyWith(
-                            color: cs.onPrimaryContainer.withValues(alpha: 0.8),
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          _matchExecutionSummary!,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: cs.onPrimaryContainer.withValues(alpha: 0.9),
-                            height: 1.45,
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-              ),
-            ],
-            const SizedBox(height: 20),
-            SizedBox(
-              width: double.infinity,
-              child: _listening
-                  ? FilledButton.tonalIcon(
-                      onPressed: _stopBusy ? null : _onStopListening,
-                      icon: _stopBusy
-                          ? SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: cs.onSecondaryContainer,
-                              ),
-                            )
-                          : const Icon(Icons.stop_rounded, size: 22),
-                      label: Text(_stopBusy ? 'Stopping…' : 'Stop Listening'),
-                    )
-                  : FilledButton.icon(
-                      onPressed: _startBusy ? null : _onStartListening,
-                      icon: _startBusy
-                          ? SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: cs.onPrimary,
-                              ),
-                            )
-                          : const Icon(Icons.mic_rounded, size: 22),
-                      label: Text(_startBusy ? 'Starting…' : 'Start Listening'),
-                    ),
-            ),
-            const SizedBox(height: 12),
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: _testBusy ? null : _onTestTrigger,
-                icon: _testBusy
-                    ? SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: cs.primary,
-                        ),
-                      )
-                    : const Icon(Icons.bolt_rounded, size: 20),
-                label: Text(_testBusy ? 'Saving…' : 'Test Trigger'),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: cs.onPrimaryContainer,
-                  side: BorderSide(
-                    color: cs.primary.withValues(alpha: 0.55),
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _DebugLine extends StatelessWidget {
-  const _DebugLine({
-    required this.label,
-    required this.value,
-    required this.theme,
-    required this.cs,
-  });
-
-  final String label;
-  final String value;
-  final ThemeData theme;
-  final ColorScheme cs;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          style: theme.textTheme.labelSmall?.copyWith(
-            color: cs.onPrimaryContainer.withValues(alpha: 0.65),
-            fontWeight: FontWeight.w600,
-            letterSpacing: 0.2,
           ),
-        ),
-        const SizedBox(height: 4),
-        SelectableText(
-          value,
-          style: theme.textTheme.bodySmall?.copyWith(
-            color: cs.onPrimaryContainer.withValues(alpha: 0.9),
-            height: 1.4,
-          ),
-        ),
-      ],
+        );
+      },
     );
   }
 }

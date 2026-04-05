@@ -8,6 +8,8 @@ import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+// Quick Trigger from native: BasicMessageChannel "com.example.wishpr_app/quick_trigger"
+// (see lib/services/quick_trigger_android_prep.dart).
 
 class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {

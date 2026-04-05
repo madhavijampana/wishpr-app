@@ -8,10 +8,12 @@ import 'trigger_location_snapshot.dart';
 ///
 /// New events use [phraseLabel], [phraseText], [triggeredAt], [status], [userId].
 /// Legacy docs may only have `phrase` and `occurredAt`; [fromFirestore] maps those.
-/// How the history row was created: manual test button vs live speech match.
+/// How the history row was created.
 enum TriggerEventSource {
   test,
   speech,
+  timer,
+  quickTrigger,
 }
 
 class TriggerEventDocument {
@@ -53,7 +55,7 @@ class TriggerEventDocument {
 
   final TriggerLocationSnapshot? locationSnapshot;
 
-  /// `test` = Guard Mode “Test Trigger”; `speech` = phrase matched from STT.
+  /// test · speech · timer · quick_trigger (see [TriggerEventSource]).
   final TriggerEventSource? source;
 
   String get whenLabel {
@@ -96,9 +98,31 @@ class TriggerEventDocument {
 
   static TriggerEventSource? _parseSource(String? raw) {
     if (raw == null || raw.isEmpty) return null;
-    if (raw == 'test') return TriggerEventSource.test;
-    if (raw == 'speech') return TriggerEventSource.speech;
-    return null;
+    switch (raw) {
+      case 'test':
+        return TriggerEventSource.test;
+      case 'speech':
+        return TriggerEventSource.speech;
+      case 'timer':
+        return TriggerEventSource.timer;
+      case 'quick_trigger':
+        return TriggerEventSource.quickTrigger;
+      default:
+        return null;
+    }
+  }
+
+  static String _sourceToFirestore(TriggerEventSource s) {
+    switch (s) {
+      case TriggerEventSource.test:
+        return 'test';
+      case TriggerEventSource.speech:
+        return 'speech';
+      case TriggerEventSource.timer:
+        return 'timer';
+      case TriggerEventSource.quickTrigger:
+        return 'quick_trigger';
+    }
   }
 
   Map<String, dynamic> toCreateMap() {
@@ -126,7 +150,7 @@ class TriggerEventDocument {
       map['locationSnapshot'] = locationSnapshot!.toFirestoreMap();
     }
     if (source != null) {
-      map['source'] = source == TriggerEventSource.test ? 'test' : 'speech';
+      map['source'] = _sourceToFirestore(source!);
     }
     return map;
   }
