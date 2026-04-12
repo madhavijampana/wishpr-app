@@ -85,4 +85,5 @@ class DefaultFirebaseOptions {
     storageBucket: 'wishpr-1857a.firebasestorage.app',
     measurementId: 'G-G41ED78G1C',
   );
+
 }
