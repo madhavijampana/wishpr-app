@@ -6,6 +6,7 @@ import 'permission_service.dart';
 abstract class WishprLocationCapturing {
   Future<LocationCaptureOutcome> captureCurrentLocation({
     required PermissionService permissionService,
+    Future<bool> Function()? confirmBeforePermissionRequest,
   });
 }
 
@@ -16,9 +17,16 @@ class WishprLocationService implements WishprLocationCapturing {
   @override
   Future<LocationCaptureOutcome> captureCurrentLocation({
     required PermissionService permissionService,
+    Future<bool> Function()? confirmBeforePermissionRequest,
   }) async {
     var perm = await permissionService.status(WishprPermission.locationWhenInUse);
     if (!permissionService.isAllowed(perm)) {
+      final proceed = await confirmBeforePermissionRequest?.call() ?? true;
+      if (!proceed) {
+        return LocationCaptureOutcome.failure(
+          'Location permission was not requested.',
+        );
+      }
       perm = await permissionService.request(WishprPermission.locationWhenInUse);
     }
     if (!permissionService.isAllowed(perm)) {

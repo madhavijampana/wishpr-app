@@ -24,6 +24,7 @@ class PhraseActionExecutor {
     ContactsRepository? contactsRepository,
     WishprCommLauncher? commLauncher,
     WishprSmsSending? smsService,
+    this.confirmLocationPermissionRequest,
   })  : _permissions = permissionService ?? const PermissionService(),
         _location = locationService ?? const WishprLocationService(),
         _contacts = contactsRepository ?? ContactsRepository(),
@@ -33,6 +34,9 @@ class PhraseActionExecutor {
               permissionService: permissionService ?? const PermissionService(),
               launcher: commLauncher ?? const WishprCommLauncherService(),
             );
+
+  /// Shown immediately before the system location permission sheet when needed.
+  final Future<bool> Function()? confirmLocationPermissionRequest;
 
   final PermissionService _permissions;
   final WishprLocationCapturing _location;
@@ -72,6 +76,7 @@ class PhraseActionExecutor {
       if (step == PhraseGuardAction.shareLocation) {
         final outcome = await _location.captureCurrentLocation(
           permissionService: _permissions,
+          confirmBeforePermissionRequest: confirmLocationPermissionRequest,
         );
         if (outcome.isSuccess) {
           final pos = outcome.position!;

@@ -15,6 +15,7 @@ import '../services/firestore_error_message.dart';
 import '../services/permission_service.dart';
 import '../services/trigger_events_repository.dart';
 import '../theme/wishpr_constants.dart';
+import '../widgets/permission_rationale_dialog.dart';
 import '../widgets/wishpr_feedback.dart';
 import 'about_wishpr_screen.dart';
 import 'legal_disclaimer_screen.dart';
@@ -128,6 +129,14 @@ class _SettingsScreenState extends State<SettingsScreen>
       await _permissionService.openAppSettingsPage();
       await _refreshPermissionStatuses();
       return;
+    }
+
+    if (kind == WishprPermission.microphone) {
+      final go = await showMicrophonePermissionRationaleDialog(context);
+      if (!go || !mounted) return;
+    } else if (kind == WishprPermission.locationWhenInUse) {
+      final go = await showLocationPermissionRationaleDialog(context);
+      if (!go || !mounted) return;
     }
 
     await _permissionService.request(kind);
@@ -350,11 +359,11 @@ class _SettingsScreenState extends State<SettingsScreen>
               color: cs.primary.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(WishprLayout.iconTileRadius),
             ),
-            child: Icon(Icons.privacy_tip_rounded, color: cs.primary),
+            child: Icon(Icons.policy_outlined, color: cs.primary),
           ),
-          title: const Text('Privacy'),
+          title: const Text('Privacy Policy'),
           subtitle: Text(
-            'What we collect and how Guard Mode uses the microphone',
+            'Data we collect, how it’s used, sharing, and permissions',
             style: TextStyle(
               fontSize: 13,
               color: cs.onSurface.withValues(alpha: 0.55),

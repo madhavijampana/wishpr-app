@@ -14,6 +14,8 @@ abstract final class GuardUserMessages {
       'A trigger just ran — brief pause before another to avoid repeats.';
   static const speechRecognitionProblem =
       'Couldn’t use speech recognition. Check the microphone and try again.';
+  static const speechNetworkProblem =
+      'Speech recognition needs a working internet connection on this device. Check your network and try again.';
   static const phrasesLoadProblem =
       'Couldn’t load your phrases. Check your connection and try again.';
   static const speechEngineUnavailable =

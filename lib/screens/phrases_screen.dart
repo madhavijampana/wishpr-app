@@ -118,7 +118,7 @@ class _PhrasesScreenState extends State<PhrasesScreen> {
                                   ),
                                 ),
                               );
-                              if (!mounted) return;
+                              if (!context.mounted) return;
                               if (updated == true) {
                                 WishprFeedback.success(
                                   context,

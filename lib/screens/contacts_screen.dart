@@ -3,9 +3,11 @@ import 'package:flutter/material.dart';
 import '../services/contacts_repository.dart';
 import '../services/current_user_id.dart';
 import '../services/firestore_error_message.dart';
+import '../services/trusted_contacts_education_prefs.dart';
 import '../theme/wishpr_constants.dart';
 import '../widgets/contact_card.dart';
 import '../widgets/firestore_list_state.dart';
+import '../widgets/permission_rationale_dialog.dart';
 import '../widgets/signed_out_placeholder.dart';
 import '../widgets/wishpr_feedback.dart';
 import 'add_contact_screen.dart';
@@ -24,6 +26,16 @@ class _ContactsScreenState extends State<ContactsScreen> {
   ContactsRepository get _repo => _contactsRepo ??= ContactsRepository();
 
   Future<void> _openAddContact() async {
+    final uid = currentWishprUid();
+    if (uid == null) return;
+
+    final introDone = await TrustedContactsEducationPrefs.wasShown();
+    if (!introDone && mounted) {
+      await showTrustedContactsEducationDialog(context);
+      await TrustedContactsEducationPrefs.markShown();
+    }
+    if (!mounted) return;
+
     final added = await Navigator.of(context).push<bool>(
       MaterialPageRoute<bool>(
         builder: (context) => const AddContactScreen(),
@@ -121,7 +133,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
                                   ),
                                 ),
                               );
-                              if (!mounted) return;
+                              if (!context.mounted) return;
                               if (updated == true) {
                                 WishprFeedback.success(
                                   context,

@@ -16,6 +16,7 @@ import '../services/timer_failsafe_controller.dart';
 import '../services/timer_failsafe_prefs.dart';
 import '../services/trigger_events_repository.dart';
 import 'app_scaffold_messenger.dart';
+import 'permission_rationale_dialog.dart';
 import 'quick_trigger_feedback.dart';
 
 /// Provides [timer] and [quick] to the subtree (Timer Fail-Safe + Quick Trigger).
@@ -181,7 +182,12 @@ class _WishprSafetyHostState extends State<WishprSafetyHost> {
 
     PhraseActionExecutionReport report;
     try {
-      report = await PhraseActionExecutor().execute(phrase, uid);
+      report = await PhraseActionExecutor(
+        confirmLocationPermissionRequest: () async {
+          if (!mounted) return false;
+          return showLocationPermissionRationaleDialog(context);
+        },
+      ).execute(phrase, uid);
     } catch (e, st) {
       AppLog.e('WishprSafetyHost timer execute', e, st);
       report = _failedReport(e);
@@ -217,7 +223,12 @@ class _WishprSafetyHostState extends State<WishprSafetyHost> {
 
     PhraseActionExecutionReport report;
     try {
-      report = await PhraseActionExecutor().execute(phrase, uid);
+      report = await PhraseActionExecutor(
+        confirmLocationPermissionRequest: () async {
+          if (!mounted) return false;
+          return showLocationPermissionRationaleDialog(context);
+        },
+      ).execute(phrase, uid);
     } catch (e, st) {
       AppLog.e('WishprSafetyHost quick execute', e, st);
       report = _failedReport(e);

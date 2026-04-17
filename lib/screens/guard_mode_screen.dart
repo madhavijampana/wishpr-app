@@ -34,6 +34,7 @@ import '../widgets/guard/guard_status_card.dart';
 import '../widgets/guard/guard_top_state.dart';
 import '../widgets/quick_trigger_feedback.dart';
 import '../widgets/microphone_permission_dialog.dart';
+import '../widgets/permission_rationale_dialog.dart';
 import '../widgets/wishpr_feedback.dart';
 import '../widgets/wishpr_safety_host.dart';
 
@@ -78,8 +79,17 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
   Timer? _silenceTimer;
   DateTime? _lastPhraseFetchAt;
 
+  /// Bumped on each speech callback and when stopping — drops stale async
+  /// [_evaluateAndMaybeTrigger] runs so older transcripts cannot overwrite
+  /// matcher state after newer audio (Firestore awaits make this likely).
+  int _phraseEvalGeneration = 0;
+
   static const Duration _partialEvalDebounce = Duration(milliseconds: 450);
   static const Duration _silenceNoTranscriptTimeout = Duration(seconds: 5);
+  static const Duration _speechErrorToastCooldown = Duration(seconds: 12);
+
+  /// Limits repeated [WishprFeedback.error] when the engine fires many errors in a row.
+  DateTime? _lastSpeechErrorUserToastAt;
 
   /// Silence / no-transcript hint (friendly copy; also gates user-facing status).
   String _silenceUserHint = '';
@@ -504,7 +514,7 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
 
       if (!_permissionService.isAllowed(micStatus)) {
         setState(() => _stMicGranted = 'No');
-        AppLog.w('Guard: microphone not granted');
+        AppLog.w('Guard: microphone not granted — open dialog');
         await showMicrophonePermissionDialog(
           context: context,
           permissionService: _permissionService,
@@ -512,69 +522,50 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
         return;
       }
 
-      List<PhraseDocument> loaded;
-      try {
-        loaded = await _phrasesRepo.fetchPhrasesOnce(uid);
-      } catch (e) {
-        if (!mounted) return;
-        final dev = DebugModeController.instance.value;
-        setState(() {
-          if (!dev) _ambientWarning = GuardUserMessages.phrasesLoadProblem;
-        });
-        WishprFeedback.error(
-          context,
-          dev ? firestoreErrorMessage(e) : GuardUserMessages.phrasesLoadProblem,
-        );
-        return;
-      }
-
-      if (!mounted) return;
-      setState(() {
-        _phrases = loaded;
-        _clearSpeechTrace();
-        _stMicGranted = 'Yes';
-        final n = _activePhraseCountFor(loaded);
-        _stPhraseCount =
-            '${loaded.length} document(s) · $n active with non-empty secret';
-        _stLoadedPhraseTexts = _formatPhraseTextsTrace(loaded);
-        _stMatchAttempt =
-            'Idle — will match on partial and final transcripts (debounced).';
-      });
-
-      AppLog.d(
-        'Guard: phrases loaded at session start',
-        'count=${loaded.length}',
-      );
-
-      unawaited(_reloadContacts());
-
-      if (_activePhraseCount == 0) {
-        WishprFeedback.info(
-          context,
-          'Add at least one active secret phrase to detect speech triggers.',
-        );
-      }
+      setState(() => _stMicGranted = 'Yes');
+      AppLog.d('Guard: microphone allowed — initializing speech engine');
 
       final speechOk = await _speech.initialize(
         onError: (err) {
-          AppLog.w(
-            'Guard: speech onError',
-            '${err.errorMsg} permanent=${err.permanent}',
-          );
+          final msg = err.errorMsg;
+          final benign = _benignSpeechEngineError(msg);
+          if (benign) {
+            AppLog.d(
+              'Guard: speech onError (benign)',
+              '$msg permanent=${err.permanent}',
+            );
+          } else {
+            AppLog.w(
+              'Guard: speech onError',
+              '$msg permanent=${err.permanent}',
+            );
+          }
           if (!mounted) return;
           final dev = DebugModeController.instance.value;
           setState(() {
-            _speechLastErrorLine = err.errorMsg;
-            if (!dev) {
-              _ambientWarning = GuardUserMessages.speechRecognitionProblem;
+            _speechLastErrorLine = msg;
+            if (!dev && !benign) {
+              _ambientWarning = _speechNetworkError(msg)
+                  ? GuardUserMessages.speechNetworkProblem
+                  : GuardUserMessages.speechRecognitionProblem;
             }
           });
-          WishprFeedback.error(
-            context,
-            dev
-                ? 'Speech error: ${err.errorMsg}'
-                : GuardUserMessages.speechRecognitionProblem,
-          );
+          if (benign) return;
+          final now = DateTime.now();
+          final last = _lastSpeechErrorUserToastAt;
+          final allowToast = last == null ||
+              now.difference(last) > _speechErrorToastCooldown;
+          if (allowToast) {
+            _lastSpeechErrorUserToastAt = now;
+            WishprFeedback.error(
+              context,
+              dev
+                  ? 'Speech error: $msg'
+                  : (_speechNetworkError(msg)
+                      ? GuardUserMessages.speechNetworkProblem
+                      : GuardUserMessages.speechRecognitionProblem),
+            );
+          }
         },
         onStatus: (status) {
           AppLog.d('Guard: speech onStatus', status);
@@ -594,7 +585,11 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
             _ambientWarning = GuardUserMessages.speechEngineUnavailable;
           }
         });
-        AppLog.w('Guard: speech engine not available');
+        AppLog.e(
+          'Guard: speech initialize failed',
+          StateError('SpeechToText.initialize returned false'),
+          StackTrace.current,
+        );
         WishprFeedback.error(
           context,
           GuardUserMessages.speechEngineUnavailable,
@@ -602,7 +597,38 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
         return;
       }
 
+      AppLog.d(
+        'Guard: speech initialize ok',
+        'isEngineInitialized=${_speech.isEngineInitialized} '
+        'isAvailable=${_speech.isAvailable}',
+      );
+
+      List<PhraseDocument> loaded;
+      try {
+        loaded = await _phrasesRepo.fetchPhrasesOnce(uid);
+      } catch (e, st) {
+        AppLog.e('Guard: phrase load after speech init failed', e, st);
+        if (!mounted) return;
+        final dev = DebugModeController.instance.value;
+        setState(() {
+          if (!dev) _ambientWarning = GuardUserMessages.phrasesLoadProblem;
+        });
+        WishprFeedback.error(
+          context,
+          dev ? firestoreErrorMessage(e) : GuardUserMessages.phrasesLoadProblem,
+        );
+        return;
+      }
+
+      if (!mounted) return;
       setState(() {
+        _phrases = loaded;
+        _clearSpeechTrace();
+        final n = _activePhraseCountFor(loaded);
+        _stPhraseCount =
+            '${loaded.length} document(s) · $n active with non-empty secret';
+        _stLoadedPhraseTexts = _formatPhraseTextsTrace(loaded);
+        _lastSpeechErrorUserToastAt = null;
         _speechEngineLine = 'Initialized';
         _speechLastErrorLine = '—';
         _ambientWarning = null;
@@ -628,44 +654,60 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
         _stMatcherThreshold = '—';
         _stMatcherReason = '—';
         _stMatchAttempt =
-            'Listening — partial + final matching (debounced); strong partials can trigger.';
+            'Listening — phrase matching runs only on speech recognition results.';
         _stMatchedPhrase = '—';
         _stActionEngine = '—';
         _stFirestoreWrite = '—';
         _stLastException = '—';
       });
 
-      AppLog.d('Guard: startListening invoked');
+      AppLog.d(
+        'Guard: phrases loaded after speech init',
+        'count=${loaded.length}',
+      );
+
+      unawaited(_reloadContacts());
+
+      if (_activePhraseCount == 0) {
+        WishprFeedback.info(
+          context,
+          'Add at least one active secret phrase to detect speech triggers.',
+        );
+      }
+
+      AppLog.d('Guard: invoking startListening', 'engine already initialized');
       _lastPhraseFetchAt = DateTime.now();
+      _phraseEvalGeneration++;
       _armSilenceWatch();
-      await _speech.startListening(_onSpeechResult);
+      await _speech.startListening(_handleSpeechRecognitionResult);
     } finally {
       if (mounted) setState(() => _startBusy = false);
     }
   }
 
-  void _onSpeechResult(SpeechRecognitionResult result) {
+  /// Speech callback: updates live transcript UI, then schedules phrase matching only here.
+  void _handleSpeechRecognitionResult(SpeechRecognitionResult result) {
     if (!mounted) return;
 
     final words = result.recognizedWords;
     final isFinal = result.finalResult;
 
     AppLog.d(
-      'Guard: onResult',
-      'recognizedWords="$words" finalResult=$isFinal',
+      'Guard: speech recognized',
+      'text="${words.replaceAll('"', '\\"')}" final=$isFinal '
+      'listeningNow=${_speech.isListeningNow}',
     );
 
     final uid = currentWishprUid();
 
-      setState(() {
-        _liveText = words;
-        _friendlyNoMatch = false;
-        _friendlyCooldown = false;
-        if (_ambientWarning != null) _ambientWarning = null;
-        _stLastCallbackKind = isFinal ? 'final' : 'partial';
+    setState(() {
+      _liveText = words;
+      _friendlyNoMatch = false;
+      _friendlyCooldown = false;
+      if (_ambientWarning != null) _ambientWarning = null;
+      _stLastCallbackKind = isFinal ? 'final' : 'partial';
       if (!isFinal) {
-        _stPartialTranscript =
-            words.isEmpty ? '(empty partial)' : words;
+        _stPartialTranscript = words.isEmpty ? '(empty partial)' : words;
       } else {
         _stFinalTranscript = words.isEmpty ? '(empty final)' : words;
       }
@@ -681,8 +723,9 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
       } else {
         if (_silenceUserHint.isNotEmpty) _silenceUserHint = '';
         _stMatchAttempt = isFinal
-            ? 'Evaluating (final, immediate)…'
-            : 'Evaluating (partial, debounced ${_partialEvalDebounce.inMilliseconds}ms)…';
+            ? 'Queued phrase match (final)…'
+            : 'Queued phrase match (partial, '
+                '${_partialEvalDebounce.inMilliseconds}ms debounce)…';
       }
     });
 
@@ -690,13 +733,32 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
       _cancelSilenceWatch();
     }
 
-    if (uid == null) return;
+    _schedulePhraseMatchingFromRecognition(uid, words, isFinal);
+  }
+
+  /// Phrase matching / Firestore evaluation only runs from recognition callbacks.
+  void _schedulePhraseMatchingFromRecognition(
+    String? uid,
+    String words,
+    bool isFinal,
+  ) {
+    if (uid == null) {
+      AppLog.d('Guard: phrase matching skipped', 'not signed in');
+      return;
+    }
+
+    _phraseEvalGeneration++;
+    final evalGen = _phraseEvalGeneration;
 
     _matchDebounceTimer?.cancel();
     final delay = isFinal ? Duration.zero : _partialEvalDebounce;
     _matchDebounceTimer = Timer(delay, () {
       if (!mounted) return;
-      unawaited(_evaluateAndMaybeTrigger(uid, words, isFinal));
+      AppLog.d(
+        'Guard: phrase matching run',
+        'debounced final=$isFinal gen=$evalGen',
+      );
+      unawaited(_evaluateAndMaybeTrigger(uid, words, isFinal, evalGen));
     });
   }
 
@@ -704,11 +766,15 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
     String uid,
     String heardWords,
     bool isFinal,
+    int evalGen,
   ) async {
-    if (!mounted) return;
+    bool evalStillCurrent() => mounted && evalGen == _phraseEvalGeneration;
+
+    if (!evalStillCurrent()) return;
 
     final trimmed = heardWords.trim();
     if (trimmed.isEmpty) {
+      if (!evalStillCurrent()) return;
       setState(() {
         _stLatestRecognized = '(empty)';
         _stNormalized = '(empty)';
@@ -724,7 +790,7 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
 
     final normalizedPreview = PhraseMatcher.normalize(trimmed);
     if (normalizedPreview.isEmpty) {
-      if (!mounted) return;
+      if (!evalStillCurrent()) return;
       setState(() {
         _stNormalized = '(empty after normalization)';
         _stNormalizedFlex = '(empty)';
@@ -736,6 +802,7 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
       return;
     }
 
+    if (!evalStillCurrent()) return;
     setState(() {
       _stMatchAttempt = isFinal
           ? 'Fetching phrases (final)…'
@@ -758,12 +825,14 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
     if (shouldRefresh) {
       try {
         fresh = await _phrasesRepo.fetchPhrasesOnce(uid);
+        if (!evalStillCurrent()) return;
         fetchOk = true;
         _lastPhraseFetchAt = now;
         AppLog.d('Guard: phrases fetched', 'count=${fresh.length} final=$isFinal');
       } catch (e, st) {
         fetchError = e;
         AppLog.e('Guard: phrases fetch failed — using cache if any', e, st);
+        if (!evalStillCurrent()) return;
         fresh = List<PhraseDocument>.from(_phrases);
       }
     } else {
@@ -775,7 +844,7 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
       );
     }
 
-    if (!mounted) return;
+    if (!evalStillCurrent()) return;
 
     if (fetchOk && fetchError == null) {
       setState(() => _stLastException = '—');
@@ -787,6 +856,7 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
     }
 
     if (!fetchOk && fresh.isEmpty) {
+      if (!evalStillCurrent()) return;
       setState(() {
         _stPhraseCount = '0';
         _stLoadedPhraseTexts = '(none)';
@@ -799,6 +869,7 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
     }
 
     if (fetchOk && fresh.isEmpty) {
+      if (!evalStillCurrent()) return;
       setState(() {
         _phrases = fresh;
         _stPhraseCount = '0 documents, 0 active with secret';
@@ -810,6 +881,7 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
       return;
     }
 
+    if (!evalStillCurrent()) return;
     setState(() {
       _phrases = fresh;
       final activeN = _activePhraseCountFor(fresh);
@@ -822,11 +894,12 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
     AppLog.d('Guard: normalization completed', '"$normalizedPreview" final=$isFinal');
 
     final eval = PhraseMatcher.evaluate(trimmed, fresh);
-    if (!mounted) return;
+    if (!evalStillCurrent()) return;
 
     PhraseDocument? candidate = eval.match;
     if (candidate != null && !isFinal) {
       if (!_partialMatchStrongEnough(eval, candidate)) {
+        if (!evalStillCurrent()) return;
         setState(() {
           _applyEvalToMatcherTrace(eval);
           _friendlyNoMatch = false;
@@ -842,6 +915,7 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
       }
     }
 
+    if (!evalStillCurrent()) return;
     setState(() {
       _applyEvalToMatcherTrace(eval);
       _stMatchAttempt = candidate != null
@@ -858,12 +932,13 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
 
     final matched = candidate;
 
+    if (!evalStillCurrent()) return;
     setState(() {
       _stMatchedPhrase = 'id=${matched.id} · label="${matched.label}"';
     });
 
     if (!_cooldown.canTrigger(matched.id)) {
-      if (!mounted) return;
+      if (!evalStillCurrent()) return;
       setState(() {
         _friendlyCooldown = true;
         _friendlyNoMatch = false;
@@ -875,12 +950,14 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
     }
 
     _cooldown.recordTrigger(matched.id);
-    if (mounted) {
+    if (evalStillCurrent()) {
       setState(() {
         _friendlyNoMatch = false;
         _friendlyCooldown = false;
       });
     }
+    // Once matched, complete the safety pipeline even if newer speech bumps
+    // [_phraseEvalGeneration] during action execution.
     await _persistTrigger(uid, matched, trimmed);
   }
 
@@ -898,7 +975,10 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
 
     PhraseActionExecutionReport report;
     try {
-      report = await PhraseActionExecutor().execute(phrase, uid);
+      report = await PhraseActionExecutor(
+        confirmLocationPermissionRequest: () =>
+            showLocationPermissionRationaleDialog(context),
+      ).execute(phrase, uid);
       if (!mounted) return;
       final failed = report.status == 'Failed' || report.status == 'Partial';
       setState(() {
@@ -1001,6 +1081,7 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
   Future<void> _onStopListening() async {
     setState(() => _stopBusy = true);
     try {
+      _phraseEvalGeneration++;
       _matchDebounceTimer?.cancel();
       _matchDebounceTimer = null;
       _cancelSilenceWatch();
@@ -1019,6 +1100,30 @@ class _GuardModeScreenState extends State<GuardModeScreen> {
       }
     } finally {
       if (mounted) setState(() => _stopBusy = false);
+    }
+  }
+
+  /// Session ends and restarts often; these are not microphone failures.
+  static bool _benignSpeechEngineError(String msg) {
+    switch (msg) {
+      case 'error_speech_timeout':
+      case 'error_no_match':
+      case 'error_busy':
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  static bool _speechNetworkError(String msg) {
+    switch (msg) {
+      case 'error_network':
+      case 'error_network_timeout':
+      case 'error_server':
+      case 'error_server_disconnected':
+        return true;
+      default:
+        return false;
     }
   }
 

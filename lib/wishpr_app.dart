@@ -7,11 +7,12 @@ import 'theme/wishpr_constants.dart';
 import 'theme/wishpr_theme.dart';
 import 'widgets/app_scaffold_messenger.dart';
 import 'widgets/auth_gate.dart';
+import 'widgets/disclaimer_gate.dart';
 import 'widgets/wishpr_bootstrap_error.dart';
 import 'widgets/wishpr_safety_host.dart';
 import 'widgets/wishpr_splash_view.dart';
 
-/// Root widget: Firebase init, branded splash, then [AuthGate].
+/// Root widget: Firebase init, branded splash, disclaimer gate, then [AuthGate].
 class WishprApp extends StatefulWidget {
   const WishprApp({super.key});
 
@@ -64,7 +65,13 @@ class _WishprAppState extends State<WishprApp> {
       theme: WishprTheme.dark,
       scaffoldMessengerKey: wishprScaffoldMessengerKey,
       builder: (context, child) {
-        return WishprSafetyHost(child: child ?? const SizedBox.shrink());
+        final c = child ?? const SizedBox.shrink();
+        // [WishprSafetyHost] touches Firestore in constructors — only mount after
+        // [Firebase.initializeApp] completes (see _buildHome / _initializing).
+        if (_initializing || _initFailed) {
+          return c;
+        }
+        return WishprSafetyHost(child: c);
       },
       home: _buildHome(),
     );
@@ -84,6 +91,8 @@ class _WishprAppState extends State<WishprApp> {
         onRetry: _initializeFirebase,
       );
     }
-    return const AuthGate();
+    return const DisclaimerGate(
+      child: AuthGate(),
+    );
   }
 }
